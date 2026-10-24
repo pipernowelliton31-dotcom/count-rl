@@ -1,0 +1,42 @@
+# Version A — reward-gated structure distillation. No SDE, no GRPO.
+extends: common.yaml
+
+method: reward_gated_distillation
+use_grpo: false
+use_sde: false
+group_size: null
+teacher_actions_per_case: 1
+skip_teacher_if_student_exact: true
+
+loss:
+  distillation: velocity_mse
+  reward_gate: positive_reward_gain
+  behavior_keep_weight: 0.1
+  teacher_weight: 1.0
+  reference_kl_weight: 0.0
+
+optimizer:
+  lr: 1.0e-5
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+  grad_clip: 1.0
+  warmup_updates: 8
+  microbatch: 1
+  grad_accum: 8
+  ppo_epochs_per_rollout: 0
+  max_cache_passes: 2
+
+budget:
+  # Same ~480 final training images as Version B (1 student + ≤1 teacher).
+  n_train_cases: 240
+  n_rounds: 4
+  cases_per_round: 60
+  max_images: 480
+  max_updates_per_round: 32
+  quota:
+    5: 24
+    6: 36
+    7: 36
+    8: 24
+    9: 60
+    10: 60

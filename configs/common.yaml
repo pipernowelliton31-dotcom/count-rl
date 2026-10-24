@@ -1,0 +1,77 @@
+# Shared defaults for Version A (pure distillation) and Version B (GRPO-Fast + KL).
+# Method YAMLs only override the training algorithm and budget knobs.
+
+experiment:
+  schema: 1
+  name: structure_count_rl
+  output_root: /data/storage22t/lsj/flux2-count/outputs/count_rl
+
+model:
+  backbone: FLUX.2-klein-base-9B
+  path: /data/storage22t/lsj/models/FLUX.2-klein-base-9B
+  local_files_only: true
+  dtype: bfloat16
+  height: 1024
+  width: 1024
+  steps: 50
+  guidance: 4.0
+  generator_device: cpu
+  decode_offload_transformer: true
+  gradient_checkpointing: true
+  offload_text_encoder_after_precompute: true
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.0
+  train_bias: false
+  # Dual-stream attention projections + single-stream fused QKV/MLP projections.
+  dual_suffixes:
+    - attn.to_q
+    - attn.to_k
+    - attn.to_v
+    - attn.to_out.0
+    - attn.add_q_proj
+    - attn.add_k_proj
+    - attn.add_v_proj
+    - attn.to_add_out
+  single_suffixes:
+    - attn.to_qkv_mlp_proj
+    - attn.to_out
+
+# After this many completed ODE updates, the next transition is the branch.
+# Discrete index on the original 50-step Klein schedule, not t = 2/50.
+branch_after_completed_steps: 2
+teacher_guidance_scale: 1.0
+keep_steps: [10, 20, 40]
+
+prompt:
+  spec_name: structured_exact_counting_5x6
+  categories: [apple, mug, bottle, tennis_ball, toy_car]
+  targets: [5, 6, 7, 8, 9, 10]
+  train_seed_start: 10000
+  eval_seeds: [20000, 20001]
+
+reward:
+  backend: countgd
+  countgd_root: /data/storage22t/lsj/repos/CountGD
+  layout_v51_root: /home/lsj/layout_v51_conservative
+  device: cuda
+  confidence_threshold: 0.26
+  exact_bonus: 0.3
+  gain_scale: 0.5
+  max_plausible_count: 40
+  offload_transformer_before_eval: false
+
+sde:
+  # Used only by Version B. Version A keeps sigma = 0 (pure ODE).
+  kernel: ddim_plan
+  noise_coeff: 0.3
+  std_cap_on_next: 0.95
+  min_std: 1.0e-6
+
+eval:
+  n_images: 60
+  use_teacher: false
+  use_best_of_g: false
+  ode_only: true
