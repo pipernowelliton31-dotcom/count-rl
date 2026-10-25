@@ -1,0 +1,46 @@
+# Version B — Flow-GRPO-Fast + reward-gated Gaussian KL. Group size 4.
+extends: common.yaml
+
+method: structure_assisted_flow_grpo_fast
+use_grpo: true
+use_sde: true
+group_size: 4
+sde_steps_per_trajectory: 1
+teacher_actions_per_group: 1
+teacher_trigger: student_all_inexact
+teacher_noise_source: first_student
+
+loss:
+  ppo_clip_epsilon: 0.10
+  distillation: gaussian_mean_kl
+  teacher_weight: 0.05
+  reward_gate: positive_reward_gain
+  behavior_keep_weight: 0.0
+  reference_kl_weight: 0.01
+  advantage_std_eps: 1.0e-8
+
+optimizer:
+  lr: 5.0e-6
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+  grad_clip: 1.0
+  warmup_updates: 8
+  microbatch: 1
+  grad_accum: 1
+  ppo_epochs_per_rollout: 1
+  max_cache_passes: 1
+
+budget:
+  # Same ~480 final training images as Version A (4 students + ≤1 teacher).
+  n_train_groups: 96
+  n_rounds: 4
+  groups_per_round: 24
+  max_images: 480
+  max_updates_per_round: 24
+  quota:
+    5: 8
+    6: 12
+    7: 12
+    8: 8
+    9: 28
+    10: 28

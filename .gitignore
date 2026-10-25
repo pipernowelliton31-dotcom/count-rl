@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.yaml
+
+# Weights / checkpoints / models
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+*.h5
+*.pkl
+*.pickle
+*.gguf
+checkpoints/
+weights/
+
+# Detector clones (CountGD / GroundingDINO) — never commit these
+CountGD/
+countgd/
+GroundingDINO/
+groundingdino/
+**/CountGD/**
+**/GroundingDINO/**
+
+# Data / outputs / logs / smoke
+/data/
+data/
+outputs/
+logs/
+*.log
+tmp/
+/tmp/count_rl_smoke/
+count_rl_smoke/
+.cache/
+wandb/
+mlruns/
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.bmp
+*.tif
+*.tiff
+
+# Datasets
+datasets/
+*.parquet
+*.tsv
+*.npy
+*.npz
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
