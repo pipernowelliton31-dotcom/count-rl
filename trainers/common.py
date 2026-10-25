@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..core.cases import TrainingCase, build_eval_cases, build_train_cases, unique_prompts
+from ..core.cases import TrainingCase, build_eval_cases, build_train_cases, interleave_by_target_rounds, unique_prompts
 from ..core.io_utils import append_jsonl, atomic_json, now_stamp
 from ..core.reward import RewardEvaluator
 from ..core.runtime import Flux2Runtime
@@ -83,6 +83,12 @@ def round_slices(items: list, n_rounds: int, per_round: int) -> list[list]:
 
 def prepare_cases(cfg: dict[str, Any]) -> tuple[list[TrainingCase], list[TrainingCase]]:
     train = build_train_cases(cfg)
+    budget = cfg.get("budget", {})
+    n_rounds = int(budget.get("n_rounds") or 1)
+    per = "groups_per_round" if cfg.get("use_grpo") or cfg.get("use_sde") else "cases_per_round"
+    per_round = budget.get(per)
     if cfg.get("_limit"):
         train = train[: int(cfg["_limit"])]
+    elif n_rounds > 1:
+        train = interleave_by_target_rounds(train, n_rounds, int(per_round) if per_round else None)
     return train, build_eval_cases(cfg)

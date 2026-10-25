@@ -25,7 +25,7 @@ def comparison_table(cfg_a: dict, cfg_b: dict) -> list[dict[str, str]]:
         ("use_grpo", cfg_a.get("use_grpo"), cfg_b.get("use_grpo")),
         ("group_size", cfg_a.get("group_size"), cfg_b.get("group_size")),
         ("branch_after_completed_steps", cfg_a.get("branch_after_completed_steps"), cfg_b.get("branch_after_completed_steps")),
-        ("teacher", "1 ODE action", "1 SDE action, matched noise[0]"),
+        ("teacher", "1 ODE action", "1 SDE action, paired wrong-student noise"),
         ("student_trajectories", 1, 4),
         ("max_images_per_case", 2, 5),
         ("core_loss", "w * MSE(v_φ, v_T) + 0.1 L_keep", "L_GRPO + λ w KL_dim + β L_ref"),

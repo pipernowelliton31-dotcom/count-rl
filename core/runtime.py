@@ -58,7 +58,8 @@ class Flux2Runtime:
             "n_lora": self.lora.n_trainable(),
         }
         sde_cfg = cfg.get("sde", {})
-        self.noise_coeff = float(sde_cfg.get("noise_coeff", 0.3))
+        self.eta = float(sde_cfg.get("eta", sde_cfg.get("noise_coeff", 0.3)))
+        self.noise_coeff = self.eta
         self.next_cap = float(sde_cfg.get("std_cap_on_next", 0.95))
         self.min_std = float(sde_cfg.get("min_std", 1e-6))
         self.decode_offload = bool(model_cfg.get("decode_offload_transformer", True))
@@ -170,6 +171,36 @@ class Flux2Runtime:
                     uncond = self._transformer(latents, timestep, uncond_embeds, uncond_ids, latent_ids)
             return uncond + self.guidance * (cond - uncond)
 
+    def predict_conditional(
+        self,
+        latents,
+        step: int,
+        prompt: str,
+        cond_mode: LoraMode,
+        *,
+        grad: bool = False,
+    ):
+        """Conditional transformer only. Used for structure residual: Δ = g (c_S - c_P)."""
+        torch = self.torch
+        t, _, _ = self.sigma_pair(step)
+        timestep = t.expand(latents.shape[0]).to(latents.dtype)
+        cond_embeds, cond_ids = self.encode(prompt)
+        latent_ids = self._latent_ids
+        context = torch.enable_grad() if grad else torch.no_grad()
+        with context:
+            with self.lora_mode(cond_mode):
+                return self._transformer(latents, timestep, cond_embeds, cond_ids, latent_ids)
+
+    def structure_residual(self, latents, step: int, plain: str, structured: str):
+        """g * (c_struct - c_plain). Equals v_struct - v_plain because uncond cancels."""
+        with self.torch.no_grad():
+            c_plain = self.predict_conditional(latents, step, plain, "base", grad=False)
+            c_struct = self.predict_conditional(latents, step, structured, "base", grad=False)
+        return self.guidance * (c_struct - c_plain)
+
+    def teacher_velocity_from_old(self, v_old, latents, step: int, plain: str, structured: str):
+        return v_old + self.gamma * self.structure_residual(latents, step, plain, structured)
+
     def apply_kernel(self, latents, velocity, step: int, *, use_sde: bool, noise=None, generator=None) -> Transition:
         _, sigma, sigma_next = self.sigma_pair(step)
         return apply_transition(
@@ -181,13 +212,14 @@ class Flux2Runtime:
             noise=noise,
             generator=generator,
             noise_coeff=self.noise_coeff,
+            eta=self.eta,
             next_cap=self.next_cap,
             min_std=self.min_std,
         )
 
-    def sde_mean(self, latents, velocity, step: int):
+    def sde_mean(self, latents, velocity, step: int, std=None):
         _, sigma, sigma_next = self.sigma_pair(step)
-        return sde_mean_from_velocity(latents, velocity, sigma, sigma_next)
+        return sde_mean_from_velocity(latents, velocity, sigma, sigma_next, std=std)
 
     def run_ode_range(self, latents, prompt: str, start: int, end: int, mode: LoraMode, keep_steps=()):
         keep = []
@@ -222,6 +254,7 @@ class Flux2Runtime:
         }
 
     def teacher_guided_velocity(self, latents, step: int, plain: str, structured: str):
+        """Eager path kept for identity checks. Training uses v_old then teacher_velocity_from_old."""
         with self.torch.no_grad():
             v_old = self.predict_guided(latents, step, plain, "old", grad=False)
             v_plain = self.predict_guided(latents, step, plain, "base", grad=False)
@@ -229,39 +262,80 @@ class Flux2Runtime:
         proposal = propose_teacher(v_old, v_struct, v_plain, gamma=self.gamma)
         return proposal
 
-    def finish_and_decode(self, latents, prompt: str, start: int, mode: LoraMode = "old", keep_steps=()):
-        latents, keep = self.run_ode_range(latents, prompt, start, self.steps, mode, keep_steps=keep_steps)
-        image = self.decode(latents)
-        return image, keep
+    def finish_tail(self, latents, prompt: str, start: int, mode: LoraMode = "old", keep_steps=()):
+        return self.run_ode_range(latents, prompt, start, self.steps, mode, keep_steps=keep_steps)
 
-    def decode(self, latents):
+    def finish_and_decode(self, latents, prompt: str, start: int, mode: LoraMode = "old", keep_steps=()):
+        latents, keep = self.finish_tail(latents, prompt, start, mode, keep_steps=keep_steps)
+        images, _timing = self.decode_batch([latents])
+        return images[0], keep
+
+    def _decode_one(self, latents):
         torch = self.torch
+        if latents.device.type != "cuda":
+            latents = latents.to(self.device)
         latent_ids = self._latent_ids
         latent_height = 2 * (self.height // (self.pipe.vae_scale_factor * 2))
         latent_width = 2 * (self.width // (self.pipe.vae_scale_factor * 2))
+        unpacked = self.pipe._unpack_latents_with_ids(
+            latents, latent_ids, latent_height // 2, latent_width // 2
+        )
+        mean = self.pipe.vae.bn.running_mean.view(1, -1, 1, 1).to(unpacked.device, unpacked.dtype)
+        std = torch.sqrt(
+            self.pipe.vae.bn.running_var.view(1, -1, 1, 1) + self.pipe.vae.config.batch_norm_eps
+        ).to(unpacked.device, unpacked.dtype)
+        unpacked = self.pipe._unpatchify_latents(unpacked * std + mean)
+        image = self.pipe.vae.decode(unpacked, return_dict=False)[0].detach()
+        return self.pipe.image_processor.postprocess(image, output_type="pil")[0]
 
-        def _decode():
-            unpacked = self.pipe._unpack_latents_with_ids(
-                latents, latent_ids, latent_height // 2, latent_width // 2
-            )
-            mean = self.pipe.vae.bn.running_mean.view(1, -1, 1, 1).to(unpacked.device, unpacked.dtype)
-            std = torch.sqrt(
-                self.pipe.vae.bn.running_var.view(1, -1, 1, 1) + self.pipe.vae.config.batch_norm_eps
-            ).to(unpacked.device, unpacked.dtype)
-            unpacked = self.pipe._unpatchify_latents(unpacked * std + mean)
-            image = self.pipe.vae.decode(unpacked, return_dict=False)[0].detach()
-            return self.pipe.image_processor.postprocess(image, output_type="pil")[0]
+    def decode(self, latents):
+        images, _timing = self.decode_batch([latents])
+        return images[0]
+
+    def decode_batch(self, latents_list: list):
+        """Decode many latents with at most one Transformer CPU/GPU round-trip."""
+        import time
+
+        torch = self.torch
+        timing = {"offload_sec": 0.0, "decode_sec": 0.0}
+        if not latents_list:
+            return [], timing
+
+        def _run():
+            with torch.inference_mode():
+                return [self._decode_one(latents) for latents in latents_list]
 
         if not self.decode_offload:
-            with torch.inference_mode():
-                return _decode()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            images = _run()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            timing["decode_sec"] = time.perf_counter() - t0
+            return images, timing
+
         transformer = self.pipe.transformer
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t_off = time.perf_counter()
         transformer.to("cpu")
         gc.collect()
         torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t_decode0 = time.perf_counter()
+        timing["offload_sec"] += t_decode0 - t_off
         try:
-            with torch.inference_mode():
-                return _decode()
+            images = _run()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            timing["decode_sec"] = time.perf_counter() - t_decode0
+            return images, timing
         finally:
+            t_on = time.perf_counter()
             transformer.to("cuda")
             torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            timing["offload_sec"] += time.perf_counter() - t_on

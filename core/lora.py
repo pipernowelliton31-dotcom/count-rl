@@ -26,8 +26,12 @@ class LoRALinear(nn.Module):
         self.scaling = float(alpha) / float(rank)
         in_features = base.in_features
         out_features = base.out_features
-        self.lora_A = nn.Linear(in_features, rank, bias=False)
-        self.lora_B = nn.Linear(rank, out_features, bias=False)
+        # Wrap happens after pipe.to("cuda"); default Linear/buffer construction
+        # would otherwise leave adapters on CPU while activations are on CUDA.
+        device = base.weight.device
+        dtype = base.weight.dtype
+        self.lora_A = nn.Linear(in_features, rank, bias=False, device=device, dtype=dtype)
+        self.lora_B = nn.Linear(rank, out_features, bias=False, device=device, dtype=dtype)
         nn.init.kaiming_uniform_(self.lora_A.weight, a=5 ** 0.5)
         nn.init.zeros_(self.lora_B.weight)
         self.register_buffer("old_A", self.lora_A.weight.detach().clone())
@@ -44,15 +48,32 @@ class LoRALinear(nn.Module):
         self.mode = mode
 
     def snapshot_old(self) -> None:
-        self.old_A.copy_(self.lora_A.weight.detach())
-        self.old_B.copy_(self.lora_B.weight.detach())
+        a = self.lora_A.weight.detach()
+        b = self.lora_B.weight.detach()
+        if self.old_A.device != a.device or self.old_A.dtype != a.dtype:
+            self.register_buffer("old_A", a.clone())
+            self.register_buffer("old_B", b.clone())
+        else:
+            self.old_A.copy_(a)
+            self.old_B.copy_(b)
+
+    def _align_adapters(self, x: torch.Tensor) -> None:
+        if self.lora_A.weight.device != x.device or self.lora_A.weight.dtype != x.dtype:
+            self.lora_A.to(device=x.device, dtype=x.dtype)
+            self.lora_B.to(device=x.device, dtype=x.dtype)
+        if self.old_A.device != x.device or self.old_A.dtype != x.dtype:
+            self.register_buffer("old_A", self.old_A.to(device=x.device, dtype=x.dtype))
+            self.register_buffer("old_B", self.old_B.to(device=x.device, dtype=x.dtype))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         result = self.base(x)
         if self.mode == "base":
             return result
+        self._align_adapters(x)
         if self.mode == "old":
-            delta = nn.functional.linear(nn.functional.linear(x, self.old_A), self.old_B)
+            old_A = self.old_A.to(device=x.device, dtype=x.dtype)
+            old_B = self.old_B.to(device=x.device, dtype=x.dtype)
+            delta = nn.functional.linear(nn.functional.linear(x, old_A), old_B)
             return result + delta * self.scaling
         return result + self.lora_B(self.dropout(self.lora_A(x))) * self.scaling
 

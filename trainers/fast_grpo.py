@@ -39,12 +39,21 @@ class FastGRPOTrainer:
     def _loss_group(self, group: GRPOGroup) -> tuple[torch.Tensor, dict[str, float]]:
         runtime = self.runtime
         device = runtime.device
+        stats = {
+            "grpo": 0.0,
+            "kl": 0.0,
+            "teacher_weight": float(group.teacher_weight),
+            "usable_grpo": group.usable_grpo,
+            "invalid_reward": group.invalid_reward,
+            "teacher_anchor": group.teacher_anchor,
+        }
+        if group.invalid_reward or (not group.usable_grpo and group.teacher_weight <= 0):
+            return None, stats
         x = group.x_s.to(device)
         v_phi = runtime.predict_guided(x, group.step, group.case["plain_prompt"], "student", grad=True)
         _, sigma, sigma_next = runtime.sigma_pair(group.step)
-        mu_phi = sde_mean_from_velocity(x, v_phi, sigma, sigma_next)
         std = group.std.to(device)
-        stats = {"grpo": 0.0, "kl": 0.0, "teacher_weight": float(group.teacher_weight), "usable_grpo": group.usable_grpo}
+        mu_phi = sde_mean_from_velocity(x, v_phi, sigma, sigma_next, std=std)
         losses = []
         loss_cfg = self.cfg["loss"]
         if group.usable_grpo:
@@ -73,10 +82,10 @@ class FastGRPOTrainer:
             losses.append(kl)
             stats["kl"] = float(kl.detach().cpu())
         ref_w = float(loss_cfg.get("reference_kl_weight", 0.0))
-        if ref_w > 0:
+        if ref_w > 0 and losses:
             with torch.no_grad():
                 v_base = runtime.predict_guided(x, group.step, group.case["plain_prompt"], "base", grad=False)
-            mu_base = sde_mean_from_velocity(x, v_base, sigma, sigma_next)
+            mu_base = sde_mean_from_velocity(x, v_base, sigma, sigma_next, std=std)
             ref = teacher_kl_loss(mu_base, mu_phi, std, weight=ref_w, min_std=runtime.min_std)
             losses.append(ref)
             stats["ref"] = float(ref.detach().cpu())
@@ -103,10 +112,16 @@ class FastGRPOTrainer:
                         "target": case.target,
                         "rewards": [m.reward for m in group.members],
                         "counts": [m.count for m in group.members],
+                        "reliable": [m.reliable for m in group.members],
+                        "reasons": [m.reason for m in group.members],
+                        "attempts": [m.attempts for m in group.members],
                         "usable_grpo": group.usable_grpo,
+                        "invalid_reward": group.invalid_reward,
                         "teacher_weight": group.teacher_weight,
                         "teacher_count": group.teacher_count,
+                        "teacher_anchor": group.teacher_anchor,
                         "skipped_teacher": group.skipped_teacher,
+                        **group.timing,
                     },
                 )
             for group in groups:
@@ -114,6 +129,15 @@ class FastGRPOTrainer:
                     self.optimizer.zero_grad(set_to_none=True)
                     loss, stats = self._loss_group(group)
                     if loss is None:
+                        log_metrics(
+                            self.root,
+                            {
+                                "round": round_id,
+                                "event": "skip_update",
+                                "case": group.case["id"],
+                                **stats,
+                            },
+                        )
                         continue
                     loss.backward()
                     lr = set_warmup_lr(self.optimizer, self.update, self.cfg)

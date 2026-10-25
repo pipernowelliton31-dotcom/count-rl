@@ -17,13 +17,19 @@ NUMBER_WORDS = {
     10: "ten",
 }
 
-# Internal keys follow numerosity_1120; phrases follow the structured spec.
+# Internal keys follow numerosity_1120. The original five keep the structured
+# 5x6 phrases (mug=cups, bottle=bottles); the extra five use 1120 wording.
 CATEGORIES = {
     "apple": {"object_phrase": "red apples", "countgd_text": "red apples"},
+    "orange": {"object_phrase": "oranges", "countgd_text": "oranges"},
+    "lemon": {"object_phrase": "lemons", "countgd_text": "lemons"},
+    "tennis_ball": {"object_phrase": "tennis balls", "countgd_text": "tennis balls"},
+    "baseball": {"object_phrase": "baseballs", "countgd_text": "baseballs"},
     "mug": {"object_phrase": "cups", "countgd_text": "cups"},
     "bottle": {"object_phrase": "bottles", "countgd_text": "bottles"},
-    "tennis_ball": {"object_phrase": "tennis balls", "countgd_text": "tennis balls"},
     "toy_car": {"object_phrase": "toy cars", "countgd_text": "toy cars"},
+    "rubber_duck": {"object_phrase": "yellow rubber ducks", "countgd_text": "yellow rubber ducks"},
+    "wooden_cube": {"object_phrase": "wooden cubes", "countgd_text": "wooden cubes"},
 }
 
 LAYOUTS = {

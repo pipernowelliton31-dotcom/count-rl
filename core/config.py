@@ -16,6 +16,8 @@ METHOD_FILES = {
     "fast_grpo": "fast_grpo_distill.yaml",
     "grpo": "fast_grpo_distill.yaml",
     "b": "fast_grpo_distill.yaml",
+    "fast_grpo_b50": "fast_grpo_b50.yaml",
+    "b50": "fast_grpo_b50.yaml",
 }
 
 

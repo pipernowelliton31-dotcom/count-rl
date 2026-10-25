@@ -55,17 +55,22 @@ prompt:
 reward:
   backend: countgd
   countgd_root: /data/storage22t/lsj/repos/CountGD
+  # t2i (numpy 2) cannot import CountGD; score via this dedicated env instead.
+  countgd_python: /data/storage22t/lsj/conda/envs/countgd/bin/python
   layout_v51_root: /home/lsj/layout_v51_conservative
   device: cuda
   confidence_threshold: 0.26
   exact_bonus: 0.3
   gain_scale: 0.5
   max_plausible_count: 40
+  max_retries: 2
   offload_transformer_before_eval: false
 
 sde:
   # Used only by Version B. Version A keeps sigma = 0 (pure ODE).
-  kernel: ddim_plan
+  # Coefficient-preserving DDIM mean + conservative Stepwise schedule s = η t' √(1-t).
+  kernel: ddim_cps
+  eta: 0.3
   noise_coeff: 0.3
   std_cap_on_next: 0.95
   min_std: 1.0e-6
@@ -75,3 +80,4 @@ eval:
   use_teacher: false
   use_best_of_g: false
   ode_only: true
+  decode_batch_size: 16

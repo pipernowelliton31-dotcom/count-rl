@@ -14,13 +14,18 @@ def weighted_velocity_mse(
     weight: torch.Tensor,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    """Mean over latent elements, then weight-normalize. Zero-weight rows do not dilute."""
+    """Mean over latent elements, then weight by gate. Divide by N, not sum(w).
+
+    A single-sample call therefore yields w * MSE instead of cancelling w.
+    Zero-weight rows contribute 0 but still sit in the N-average.
+    """
     student = student_velocity.float()
     teacher = teacher_velocity.float().detach()
     per = F.mse_loss(student, teacher, reduction="none")
     per = per.reshape(per.shape[0], -1).mean(dim=1)
     w = weight.float().reshape(-1)
-    return (w * per).sum() / (w.sum() + eps)
+    n = max(int(per.shape[0]), 1)
+    return (w * per).sum() / (float(n) + eps)
 
 
 def behavior_keep_loss(student_velocity: torch.Tensor, snapshot_velocity: torch.Tensor) -> torch.Tensor:

@@ -7,7 +7,7 @@
 | 配置 | `configs/distill.yaml` | `configs/fast_grpo_distill.yaml` |
 | 入口 | `--method distill` | `--method fast_grpo` |
 | Student | 1 条普通 prompt ODE | **4** 条普通 prompt SDE（group size=4） |
-| Teacher | 至多 1 条结构残差 ODE | 至多 1 条结构残差 SDE（复用 student[0] 的噪声） |
+| Teacher | 至多 1 条结构残差 ODE | 至多 1 条结构残差 SDE（配对一个错误 student 的噪声） |
 | 分支点 | 完成 **2** 个 ODE step 之后的下一次转移 | 同左 |
 | SDE / GRPO | 关 | 开，单步随机转移 |
 | Reward | 只筛选教师 | Group Advantage **加上** 教师筛选 |
@@ -35,7 +35,9 @@ Version B 的 KL 是同方差高斯、按维平均：
 \mathrm{KL}_{\mathrm{dim}}=\frac{\|\mu_T-\mu_\phi\|_2^2}{2d\sigma^2}
 \]
 
-教师动作**不进入** GRPO group。四个 student 奖励完全相同则跳过该组 GRPO。默认只在四条 student 都 inexact 时才跑教师分支。
+教师动作**不进入** GRPO group。四个 student 奖励完全相同则跳过该组 GRPO。默认 `half_inexact`：组内至少一半 inexact 才跑教师，并从错误成员里按 seed 抽一个做锚点。CountGD 检测失败（`count=-1`）的组整组作废，不进 GRPO、不调教师。
+
+Version B 的单步随机核是系数保持 DDIM 均值加保守噪声 \(s=\eta t'\sqrt{1-t}\)（\(\eta=0.3\)）。`log_prob` 仍按 Flow-GRPO 对 latent 维做均值，不是全维联合密度。ODE 后缀保持 Euler。旧 smoke 结果与新核不可直接比较。
 
 ## 运行
 
@@ -51,6 +53,7 @@ python -m count_rl --method fast_grpo --dry-run
 # 正式训练（会加载 9B）
 CUDA_VISIBLE_DEVICES=0 python -m count_rl --method distill
 CUDA_VISIBLE_DEVICES=0 python -m count_rl --method fast_grpo
+CUDA_VISIBLE_DEVICES=0 python -m count_rl --method fast_grpo_b50
 ```
 
 CountGD 路径写在 `configs/common.yaml` 的 `reward` 段，与现有 V5.1 管线一致（阈值 0.26）。

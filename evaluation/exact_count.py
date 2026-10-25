@@ -24,26 +24,47 @@ def evaluate_plain_ode(
     rows = []
     by_target: dict[int, list[bool]] = defaultdict(list)
     mae = []
+    batch_size = int(getattr(runtime, "cfg", {}).get("eval", {}).get("decode_batch_size", 16) or 16)
+    pending_cases: list[TrainingCase] = []
+    pending_latents = []
+
+    def _flush() -> None:
+        if not pending_cases:
+            return
+        images, _timing = runtime.decode_batch(pending_latents)
+        for case, image in zip(list(pending_cases), images):
+            path = out / "images" / f"{case.id}.png"
+            save_png(path, image)
+            result = evaluator.evaluate_with_retry(
+                image_path=path, target=case.target, object_text=case.countgd_text, case_id=case.id
+            )
+            exact = is_exact(result.count, case.target) if result.reliable else False
+            by_target[case.target].append(exact)
+            if result.reliable:
+                mae.append(abs(result.count - case.target))
+            rows.append(
+                {
+                    **case.as_dict(),
+                    "count": result.count,
+                    "reward": result.reward,
+                    "exact": exact,
+                    "reliable": result.reliable,
+                    "reason": result.reason,
+                    "attempts": result.attempts,
+                    "image": str(path),
+                }
+            )
+        pending_cases.clear()
+        pending_latents.clear()
+
     for case in cases:
         state = runtime.prefix_to_branch(case.seed, case.plain_prompt, 0, "student")
-        image, _ = runtime.finish_and_decode(state["latents"], case.plain_prompt, 0, "student")
-        path = out / "images" / f"{case.id}.png"
-        save_png(path, image)
-        result = evaluator.evaluate(image_path=path, target=case.target, object_text=case.countgd_text, case_id=case.id)
-        exact = is_exact(result.count, case.target) if result.reliable else False
-        by_target[case.target].append(exact)
-        if result.reliable:
-            mae.append(abs(result.count - case.target))
-        rows.append(
-            {
-                **case.as_dict(),
-                "count": result.count,
-                "reward": result.reward,
-                "exact": exact,
-                "reliable": result.reliable,
-                "image": str(path),
-            }
-        )
+        latent, _ = runtime.finish_tail(state["latents"], case.plain_prompt, 0, "student")
+        pending_cases.append(case)
+        pending_latents.append(latent)
+        if len(pending_cases) >= batch_size:
+            _flush()
+    _flush()
     summary = {
         "n": len(rows),
         "exact_accuracy": (sum(r["exact"] for r in rows) / len(rows)) if rows else 0.0,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from typing import Any, Iterator
 
@@ -92,3 +93,44 @@ def unique_prompts(cases: list[TrainingCase]) -> list[str]:
         texts.append(case.plain_prompt)
         texts.append(case.structured_prompt)
     return list(dict.fromkeys(texts))
+
+
+def interleave_by_target_rounds(cases: list[TrainingCase], n_rounds: int, per_round: int | None = None) -> list[TrainingCase]:
+    """Keep the same (target, seed, category) set; mix targets inside each round.
+
+    Each target quota is split as evenly as possible across rounds, then the
+    per-round slices are round-robin mixed so a round is not a single count.
+    """
+    if n_rounds <= 0:
+        raise ValueError("n_rounds must be positive")
+    buckets: dict[int, list[TrainingCase]] = defaultdict(list)
+    for case in cases:
+        buckets[case.target].append(case)
+    round_target_slices: list[list[list[TrainingCase]]] = [[] for _ in range(n_rounds)]
+    for target in sorted(buckets):
+        items = buckets[target]
+        n = len(items)
+        base, extra = divmod(n, n_rounds)
+        idx = 0
+        for r in range(n_rounds):
+            take = base + (1 if r < extra else 0)
+            round_target_slices[r].append(items[idx : idx + take])
+            idx += take
+    mixed: list[TrainingCase] = []
+    for r in range(n_rounds):
+        chunks = round_target_slices[r]
+        maxlen = max((len(c) for c in chunks), default=0)
+        round_cases: list[TrainingCase] = []
+        for i in range(maxlen):
+            for chunk in chunks:
+                if i < len(chunk):
+                    round_cases.append(chunk[i])
+        if per_round is not None and len(round_cases) != int(per_round):
+            raise ValueError(
+                f"Round {r} has {len(round_cases)} cases, expected {per_round}. "
+                "Check that each target quota is compatible with n_rounds."
+            )
+        mixed.extend(round_cases)
+    if len(mixed) != len(cases):
+        raise ValueError(f"Stratify changed case count {len(cases)} -> {len(mixed)}")
+    return mixed

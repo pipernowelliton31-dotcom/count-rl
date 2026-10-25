@@ -7,8 +7,8 @@ use_sde: true
 group_size: 4
 sde_steps_per_trajectory: 1
 teacher_actions_per_group: 1
-teacher_trigger: student_all_inexact
-teacher_noise_source: first_student
+teacher_trigger: half_inexact
+teacher_noise_source: paired_wrong_student
 
 loss:
   ppo_clip_epsilon: 0.10

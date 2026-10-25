@@ -7,13 +7,22 @@ import math
 import torch
 import torch.nn as nn
 
-from .core.cases import build_eval_cases, build_train_cases
+from .core.cases import build_eval_cases, build_train_cases, interleave_by_target_rounds
 from .core.config import load_experiment_config
 from .core.lora import LoRAManager
 from .core.prompt_builder import build_prompt_pair
-from .core.reward import count_reward, is_exact, reward_gate
+from .core.reward import RewardEvaluator, RewardResult, count_reward, is_exact, reward_gate
+from .core.sampler import GRPOMember, _need_teacher
 from .core.teacher import propose_teacher, teacher_velocity
-from .core.transition import apply_transition, gaussian_log_prob, gaussian_mean_kl, ode_mean, plan_sde_std
+from .core.transition import (
+    apply_transition,
+    ddim_mean,
+    ddim_sde_std,
+    gaussian_log_prob,
+    gaussian_mean_kl,
+    ode_mean,
+    plan_sde_std,
+)
 from .losses.distillation import weighted_velocity_mse
 from .losses.grpo import grpo_clip_loss, group_advantages, importance_ratio
 from .train import comparison_table
@@ -57,6 +66,8 @@ def run_selftest() -> None:
     assert cfg_a["use_grpo"] is False and cfg_a["use_sde"] is False
     assert cfg_b["use_grpo"] is True and cfg_b["use_sde"] is True
     assert cfg_b["group_size"] == 4
+    assert cfg_b["teacher_trigger"] == "half_inexact"
+    assert cfg_b["sde"]["kernel"] == "ddim_cps"
     assert cfg_a["group_size"] is None
     assert cfg_a["branch_after_completed_steps"] == cfg_b["branch_after_completed_steps"] == 2
     assert cfg_a["lora"]["rank"] == cfg_b["lora"]["rank"] == 16
@@ -141,27 +152,27 @@ def run_selftest() -> None:
     teacher = torch.ones(2, 3)
     w = torch.tensor([1.0, 0.0])
     mse = weighted_velocity_mse(student, teacher, w)
-    assert math.isclose(float(mse), 1.0, rel_tol=1e-5)
+    assert math.isclose(float(mse), 0.5, rel_tol=1e-5)
+    single = weighted_velocity_mse(torch.zeros(1, 3), torch.ones(1, 3), torch.tensor([0.4]))
+    assert math.isclose(float(single), 0.4, rel_tol=1e-5)
     kl = gaussian_mean_kl(teacher[:1], student[:1], torch.tensor([0.5]))
     expected = (1.0) / (2.0 * 0.25)
     assert math.isclose(float(kl), expected, rel_tol=1e-5)
 
+    lora_cfg = {
+        "lora": {
+            "rank": 2,
+            "alpha": 4,
+            "dropout": 0.0,
+            "dual_suffixes": [
+                "attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0",
+                "attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj", "attn.to_add_out",
+            ],
+            "single_suffixes": ["attn.to_qkv_mlp_proj", "attn.to_out"],
+        }
+    }
     tiny = _TinyFlux()
-    mgr = LoRAManager(
-        tiny,
-        {
-            "lora": {
-                "rank": 2,
-                "alpha": 4,
-                "dropout": 0.0,
-                "dual_suffixes": [
-                    "attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0",
-                    "attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj", "attn.to_add_out",
-                ],
-                "single_suffixes": ["attn.to_qkv_mlp_proj", "attn.to_out"],
-            }
-        },
-    )
+    mgr = LoRAManager(tiny, lora_cfg)
     assert mgr.n_trainable() > 0
     x = torch.randn(2, 8)
     mgr.set_mode("base")
@@ -182,6 +193,88 @@ def run_selftest() -> None:
     assert not torch.allclose(y_new, y_student)
     for p in mgr.trainable_parameters():
         assert p.requires_grad
+
+    # Simulate runtime: wrap after the host module has already moved.
+    fp16_host = _TinyFlux().to(dtype=torch.float16)
+    mgr_fp16 = LoRAManager(fp16_host, lora_cfg)
+    layer = mgr_fp16.layers[0]
+    assert layer.lora_A.weight.dtype == torch.float16
+    assert layer.old_A.dtype == torch.float16
+    x_fp16 = torch.randn(2, 8, dtype=torch.float16)
+    mgr_fp16.set_mode("old")
+    y_fp16 = fp16_host.transformer_blocks[0].attn.to_q(x_fp16)
+    assert y_fp16.dtype == torch.float16
+    mgr_fp16.set_mode("student")
+    y_fp16_s = fp16_host.transformer_blocks[0].attn.to_q(x_fp16)
+    assert y_fp16_s.dtype == torch.float16
+    if torch.cuda.is_available():
+        cuda_host = _TinyFlux().to("cuda")
+        mgr_cuda = LoRAManager(cuda_host, lora_cfg)
+        x_cuda = torch.randn(2, 8, device="cuda")
+        for mode in ("base", "student", "old"):
+            mgr_cuda.set_mode(mode)
+            y_cuda = cuda_host.transformer_blocks[0].attn.to_q(x_cuda)
+            assert y_cuda.device.type == "cuda"
+        assert mgr_cuda.layers[0].old_A.device.type == "cuda"
+
+    x = torch.zeros(1, 4, 4)
+    v = torch.ones_like(x)
+    sigma = torch.tensor([0.8])
+    sigma_next = torch.tensor([0.6])
+    dt = sigma_next - sigma
+    euler = ode_mean(x, v, dt)
+    ddim0 = ddim_mean(x, v, sigma, sigma_next, std=0.0)
+    assert torch.allclose(ddim0, euler, atol=1e-6)
+    std = ddim_sde_std(sigma, sigma_next, eta=0.3)
+    assert float(std) <= float(sigma_next)
+    t_next = float(sigma_next)
+    s = float(std)
+    assert math.isclose((t_next ** 2 - s ** 2) + s ** 2, t_next ** 2, rel_tol=1e-6)
+    torch.manual_seed(1)
+    sde = apply_transition(x, v, sigma, sigma_next, use_sde=True, eta=0.3)
+    assert torch.allclose(sde.log_prob, gaussian_log_prob(sde.next_latents, sde.mean, sde.std))
+
+    mixed_a = interleave_by_target_rounds(cases_a, 4, 60)
+    assert {c.id for c in mixed_a} == {c.id for c in cases_a}
+    round0 = mixed_a[:60]
+    counts = {t: sum(1 for c in round0 if c.target == t) for t in (5, 6, 7, 8, 9, 10)}
+    assert counts == {5: 6, 6: 9, 7: 9, 8: 6, 9: 15, 10: 15}
+    mixed_b = interleave_by_target_rounds(cases_b, 4, 24)
+    round0b = mixed_b[:24]
+    counts_b = {t: sum(1 for c in round0b if c.target == t) for t in (5, 6, 7, 8, 9, 10)}
+    assert counts_b == {5: 2, 6: 3, 7: 3, 8: 2, 9: 7, 10: 7}
+
+    dummy = torch.zeros(1)
+    def _m(exact, reliable=True):
+        return GRPOMember(dummy, dummy, dummy, dummy, 1.3 if exact else 0.3, 8 if exact else 10, exact, reliable)
+
+    assert not _need_teacher("half_inexact", [_m(True), _m(True), _m(True), _m(False)])
+    assert _need_teacher("half_inexact", [_m(True), _m(True), _m(False), _m(False)])
+    try:
+        _need_teacher("not_a_trigger", [_m(False)] * 4)
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+    calls = {"n": 0}
+
+    def mock_detect(**kwargs):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return RewardResult(-1, 0.0, False, False, reason="detect_failed:boom")
+        return RewardResult(8, 1.3, True, True, attempts=1)
+
+    ev = RewardEvaluator({"reward": {"backend": "mock", "max_retries": 2}}, mock_fn=mock_detect)
+    recovered = ev.evaluate_with_retry(image_path=None, target=8, object_text="red apples")
+    assert recovered.reliable and recovered.attempts == 2 and recovered.count == 8
+
+    g = 4.0
+    c_p = torch.tensor([1.0, 2.0])
+    c_s = torch.tensor([3.0, 5.0])
+    u = torch.tensor([0.25, -0.5])
+    v_plain = u + g * (c_p - u)
+    v_struct = u + g * (c_s - u)
+    assert torch.allclose(v_struct - v_plain, g * (c_s - c_p))
 
     print("count_rl selftest ok", flush=True)
 

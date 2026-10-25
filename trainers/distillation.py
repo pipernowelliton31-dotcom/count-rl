@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from ..core.sampler import DistillRecord, collect_distill_case
+from ..core.sampler import DistillRecord, collect_distill_round
 from ..losses.distillation import behavior_keep_loss, weighted_velocity_mse
 from .common import (
     build_evaluator,
@@ -39,13 +39,13 @@ class DistillationTrainer:
         v_student = runtime.predict_guided(x, record.step, record.case["plain_prompt"], "student", grad=True)
         stats = {"weight": float(record.weight), "distill": 0.0, "keep": 0.0}
         losses = []
-        if record.weight > 0:
+        if record.weight > 0 and record.v_teacher is not None:
             weight = torch.tensor([record.weight], device=device)
             distill = weighted_velocity_mse(v_student.unsqueeze(0), record.v_teacher.to(device).unsqueeze(0), weight)
             losses.append(distill)
             stats["distill"] = float(distill.detach().cpu())
         keep_w = float(self.cfg["loss"].get("behavior_keep_weight", 0.1))
-        if keep_w > 0 and record.keep:
+        if record.weight > 0 and keep_w > 0 and record.keep:
             keep_losses = []
             for item in record.keep:
                 kx = item["latents"].to(device)
@@ -63,7 +63,7 @@ class DistillationTrainer:
         accum = max(1, int(opt_cfg.get("grad_accum", 8)))
         max_passes = int(opt_cfg.get("max_cache_passes", 2))
         max_updates = int(self.cfg["budget"].get("max_updates_per_round", 32))
-        usable = [r for r in records if r.weight > 0 or r.keep]
+        usable = [r for r in records if r.weight > 0 and r.v_teacher is not None]
         if not usable:
             log_metrics(self.root, {"round": round_id, "event": "no_supervision"})
             return
@@ -76,6 +76,7 @@ class DistillationTrainer:
                     return
                 loss, stats = self._forward_record(record)
                 if loss is None:
+                    log_metrics(self.root, {"round": round_id, "event": "skip_update", "case": record.case["id"], **stats})
                     continue
                 (loss / accum).backward()
                 pending += 1
@@ -113,23 +114,29 @@ class DistillationTrainer:
         slices = round_slices(self.train_cases, int(budget["n_rounds"]), int(budget["cases_per_round"]))
         for round_id, batch in enumerate(slices):
             self.runtime.snapshot_old()
-            records = []
+            records = collect_distill_round(self.runtime, self.evaluator, batch, self.cfg, self.root)
             accepted = 0
-            for case in batch:
-                record = collect_distill_case(self.runtime, self.evaluator, case, self.cfg, self.root)
-                records.append(record)
+            for record in records:
                 accepted += int(record.weight > 0)
                 log_metrics(
                     self.root,
                     {
                         "round": round_id,
                         "event": "collect",
-                        "case": case.id,
-                        "target": case.target,
+                        "case": record.case["id"],
+                        "target": record.case["target"],
                         "count_plain": record.count_plain,
                         "count_teacher": record.count_teacher,
                         "weight": record.weight,
                         "skipped_teacher": record.skipped_teacher,
+                        "reason_plain": record.reason_plain,
+                        "reason_teacher": record.reason_teacher,
+                        "reliable_plain": record.reliable_plain,
+                        "attempts_plain": record.attempts_plain,
+                        "attempts_teacher": record.attempts_teacher,
+                        "scores_plain": (record.extra_plain or {}).get("scores"),
+                        "scores_teacher": (record.extra_teacher or {}).get("scores"),
+                        **record.timing,
                     },
                 )
             log_metrics(self.root, {"round": round_id, "event": "gate_rate", "accepted": accepted, "n": len(records)})

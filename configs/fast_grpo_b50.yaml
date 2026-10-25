@@ -1,0 +1,35 @@
+# Version B, 50 train groups: 10 numerosity_1120 categories × targets 6–10.
+# Default A/B YAMLs stay unchanged so selftest still matches the 5×6 spec.
+extends: fast_grpo_distill.yaml
+
+prompt:
+  spec_name: structured_exact_counting_10x5_n6_10
+  categories:
+    - apple
+    - orange
+    - lemon
+    - tennis_ball
+    - baseball
+    - mug
+    - bottle
+    - toy_car
+    - rubber_duck
+    - wooden_cube
+  targets: [6, 7, 8, 9, 10]
+
+budget:
+  n_train_groups: 50
+  n_rounds: 5
+  groups_per_round: 10
+  max_images: 250
+  max_updates_per_round: 10
+  quota:
+    5: 0
+    6: 10
+    7: 10
+    8: 10
+    9: 10
+    10: 10
+
+eval:
+  n_images: 100
