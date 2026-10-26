@@ -7,7 +7,7 @@ import math
 import torch
 import torch.nn as nn
 
-from .core.cases import build_eval_cases, build_train_cases, interleave_by_target_rounds
+from .core.cases import build_eval_cases, build_train_cases, interleave_by_target_rounds, parse_case_id
 from .core.config import load_experiment_config
 from .core.lora import LoRAManager
 from .core.prompt_builder import build_prompt_pair
@@ -77,6 +77,9 @@ def run_selftest() -> None:
     assert cfg_a["prompt"]["categories"] == cfg_b["prompt"]["categories"]
     rows = comparison_table(cfg_a, cfg_b)
     assert any(r["field"] == "core_loss" for r in rows)
+
+    parsed = parse_case_id("tennis_ball_n07_s0000010013")
+    assert parsed.category == "tennis_ball" and parsed.target == 7 and parsed.seed == 10013
 
     apple10 = build_prompt_pair("apple", 10)
     assert apple10.plain == (

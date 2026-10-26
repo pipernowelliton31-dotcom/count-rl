@@ -349,12 +349,9 @@ def collect_grpo_group(
             teacher_anchor = int(rng.choice(wrong_ids))
             anchor = members[teacher_anchor]
             with timer.stage("teacher_sec"):
-                v_teacher = runtime.teacher_velocity_from_old(
-                    v_old, x_s, step, case.plain_prompt, case.structured_prompt
+                teacher, _v_teacher, latent_t = runtime.run_teacher_structured_ode(
+                    x_s, v_old, step, case.plain_prompt, case.structured_prompt
                 )
-                noise = anchor.noise.to(device=x_s.device, dtype=torch.float32)
-                teacher = runtime.apply_kernel(x_s, v_teacher, step, use_sde=True, noise=noise)
-                latent_t, _ = runtime.finish_tail(teacher.next_latents, case.plain_prompt, step + 1, "old")
             images_t, t_timing = runtime.decode_batch([latent_t])
             timer.merge_decode(t_timing)
             path_t = _save(image_root, case.id, "teacher", images_t[0])

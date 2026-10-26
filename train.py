@@ -25,7 +25,7 @@ def comparison_table(cfg_a: dict, cfg_b: dict) -> list[dict[str, str]]:
         ("use_grpo", cfg_a.get("use_grpo"), cfg_b.get("use_grpo")),
         ("group_size", cfg_a.get("group_size"), cfg_b.get("group_size")),
         ("branch_after_completed_steps", cfg_a.get("branch_after_completed_steps"), cfg_b.get("branch_after_completed_steps")),
-        ("teacher", "1 ODE action", "1 SDE action, paired wrong-student noise"),
+        ("teacher", "1 ODE action", "1 Euler residual + structured ODE tail"),
         ("student_trajectories", 1, 4),
         ("max_images_per_case", 2, 5),
         ("core_loss", "w * MSE(v_φ, v_T) + 0.1 L_keep", "L_GRPO + λ w KL_dim + β L_ref"),
@@ -63,6 +63,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--selftest", action="store_true", help="Run CPU unit checks and exit")
     parser.add_argument("--limit", type=int, default=0, help="Optional cap on train units for a debug run")
     parser.add_argument("--reward-backend", default=None, help="Override reward.backend (countgd|mock)")
+    parser.add_argument(
+        "--probe-teacher",
+        nargs="+",
+        metavar="CASE_ID",
+        help="Regenerate teacher-only structured ODE images for these case ids and exit",
+    )
+    parser.add_argument("--lora", default=None, help="Optional LoRA checkpoint for --probe-teacher")
     args = parser.parse_args(argv)
 
     if args.selftest:
@@ -77,6 +84,12 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_experiment_config(args.method, args.config)
     if args.reward_backend:
         cfg.setdefault("reward", {})["backend"] = args.reward_backend
+    if args.probe_teacher:
+        from .probe_teacher import probe_teacher_cases
+
+        root = probe_teacher_cases(cfg, args.probe_teacher, lora_path=args.lora)
+        print(f"done {root}", flush=True)
+        return 0
     if args.limit:
         cfg["_limit"] = int(args.limit)
         cfg["budget"]["n_rounds"] = 1

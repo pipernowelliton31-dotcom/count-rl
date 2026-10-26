@@ -8,7 +8,10 @@ group_size: 4
 sde_steps_per_trajectory: 1
 teacher_actions_per_group: 1
 teacher_trigger: half_inexact
-teacher_noise_source: paired_wrong_student
+# Shared plain ODE prefix, then teacher Euler residual + structured-prompt ODE tail.
+# Students still take one SDE step at the branch. Teacher has no SDE and no paired noise.
+teacher_noise_source: none
+teacher_tail: structured_ode
 
 loss:
   ppo_clip_epsilon: 0.10

@@ -1,0 +1,4 @@
+# Same 50-group B50 as fast_grpo_b50.yaml, except prefix/branch after 5 completed ODE steps.
+# Parent files (fast_grpo_b50.yaml → fast_grpo_distill.yaml → common.yaml) stay unchanged.
+extends: fast_grpo_b50.yaml
+branch_after_completed_steps: 5

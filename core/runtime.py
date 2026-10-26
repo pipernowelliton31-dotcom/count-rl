@@ -201,6 +201,17 @@ class Flux2Runtime:
     def teacher_velocity_from_old(self, v_old, latents, step: int, plain: str, structured: str):
         return v_old + self.gamma * self.structure_residual(latents, step, plain, structured)
 
+    def run_teacher_structured_ode(self, latents, v_old, step: int, plain: str, structured: str):
+        """Branch residual as Euler ODE, then finish with the structured prompt.
+
+        No teacher SDE. Distillation still targets this first Euler mean; the
+        remaining steps use structured CFG so the final image can keep the layout.
+        """
+        v_teacher = self.teacher_velocity_from_old(v_old, latents, step, plain, structured)
+        teacher = self.apply_kernel(latents, v_teacher, step, use_sde=False)
+        next_latents, _ = self.finish_tail(teacher.next_latents, structured, step + 1, "old")
+        return teacher, v_teacher, next_latents
+
     def apply_kernel(self, latents, velocity, step: int, *, use_sde: bool, noise=None, generator=None) -> Transition:
         _, sigma, sigma_next = self.sigma_pair(step)
         return apply_transition(

@@ -159,3 +159,9 @@ class LoRAManager:
             },
             path,
         )
+
+    def load(self, path) -> None:
+        from pathlib import Path
+
+        payload = torch.load(Path(path), map_location="cpu", weights_only=False)
+        self.load_state_dict(payload["state"])

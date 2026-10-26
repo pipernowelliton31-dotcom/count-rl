@@ -30,6 +30,17 @@ def _int_quota(raw: dict[Any, Any]) -> dict[int, int]:
     return {int(k): int(v) for k, v in raw.items()}
 
 
+def parse_case_id(case_id: str, split: str = "train") -> TrainingCase:
+    """Parse `{category}_n{target:02d}_s{seed:010d}` back into a TrainingCase."""
+    name = str(case_id).strip()
+    try:
+        body, seed_text = name.rsplit("_s", 1)
+        category, target_text = body.rsplit("_n", 1)
+        return _case(category, int(target_text), int(seed_text), split)
+    except (TypeError, ValueError):
+        raise ValueError(f"Cannot parse case id {case_id!r}") from None
+
+
 def _case(category: str, target: int, seed: int, split: str) -> TrainingCase:
     pair: PromptPair = build_prompt_pair(category, target)
     return TrainingCase(
