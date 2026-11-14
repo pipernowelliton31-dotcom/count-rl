@@ -30,19 +30,19 @@ def _int_quota(raw: dict[Any, Any]) -> dict[int, int]:
     return {int(k): int(v) for k, v in raw.items()}
 
 
-def parse_case_id(case_id: str, split: str = "train") -> TrainingCase:
+def parse_case_id(case_id: str, split: str = "train", phrase_overrides: dict | None = None) -> TrainingCase:
     """Parse `{category}_n{target:02d}_s{seed:010d}` back into a TrainingCase."""
     name = str(case_id).strip()
     try:
         body, seed_text = name.rsplit("_s", 1)
         category, target_text = body.rsplit("_n", 1)
-        return _case(category, int(target_text), int(seed_text), split)
+        return _case(category, int(target_text), int(seed_text), split, phrase_overrides)
     except (TypeError, ValueError):
         raise ValueError(f"Cannot parse case id {case_id!r}") from None
 
 
-def _case(category: str, target: int, seed: int, split: str) -> TrainingCase:
-    pair: PromptPair = build_prompt_pair(category, target)
+def _case(category: str, target: int, seed: int, split: str, phrase_overrides: dict | None = None) -> TrainingCase:
+    pair: PromptPair = build_prompt_pair(category, target, phrase_overrides)
     return TrainingCase(
         id=f"{category}_n{target:02d}_s{seed:010d}",
         category=category,
@@ -57,14 +57,14 @@ def _case(category: str, target: int, seed: int, split: str) -> TrainingCase:
     )
 
 
-def iter_quota_assignments(categories: list[str], quota: dict[int, int], seed_start: int) -> Iterator[TrainingCase]:
+def iter_quota_assignments(categories: list[str], quota: dict[int, int], seed_start: int, phrase_overrides: dict | None = None) -> Iterator[TrainingCase]:
     """Round-robin categories inside each target quota so 8 cannot dominate a category."""
     seed = int(seed_start)
     for target in sorted(quota):
         n = quota[target]
         for i in range(n):
             category = categories[i % len(categories)]
-            yield _case(category, target, seed, "train")
+            yield _case(category, target, seed, "train", phrase_overrides)
             seed += 1
 
 
@@ -74,7 +74,7 @@ def build_train_cases(cfg: dict[str, Any]) -> list[TrainingCase]:
     categories = list(prompt_cfg["categories"])
     quota = _int_quota(budget["quota"])
     expected = int(budget.get("n_train_cases") or budget.get("n_train_groups") or sum(quota.values()))
-    cases = list(iter_quota_assignments(categories, quota, int(prompt_cfg["train_seed_start"])))
+    cases = list(iter_quota_assignments(categories, quota, int(prompt_cfg["train_seed_start"]), prompt_cfg.get("phrase_overrides")))
     if len(cases) != expected:
         raise ValueError(f"Quota produced {len(cases)} cases, config expected {expected}")
     if sum(quota.values()) != len(cases):
@@ -87,7 +87,7 @@ def build_eval_cases(cfg: dict[str, Any]) -> list[TrainingCase]:
     categories = list(prompt_cfg["categories"])
     targets = [int(t) for t in prompt_cfg["targets"]]
     seeds = [int(s) for s in prompt_cfg["eval_seeds"]]
-    cases = [_case(cat, target, seed, "eval") for seed in seeds for target in targets for cat in categories]
+    cases = [_case(cat, target, seed, "eval", prompt_cfg.get("phrase_overrides")) for seed in seeds for target in targets for cat in categories]
     expected = int(cfg.get("eval", {}).get("n_images", len(cases)))
     if len(cases) != expected:
         raise ValueError(f"Eval set has {len(cases)} images, config expected {expected}")

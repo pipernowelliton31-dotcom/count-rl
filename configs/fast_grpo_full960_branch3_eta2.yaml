@@ -1,0 +1,74 @@
+# Delivery config: 960 groups, shared branch 3, eta=2.0, multi-step ODE distillation.
+extends: fast_grpo_distill.yaml
+
+experiment:
+  name: full960_multistep_distill_branch3_eta2
+
+branch_after_completed_steps: 3
+teacher_guidance_scale: 1.0
+teacher_trigger: half_inexact
+
+prompt:
+  spec_name: structured_exact_counting_10x6_n5_10
+  categories:
+    - apple
+    - orange
+    - lemon
+    - tennis_ball
+    - baseball
+    - mug
+    - bottle
+    - toy_car
+    - rubber_duck
+    - wooden_cube
+  targets: [5, 6, 7, 8, 9, 10]
+  train_seed_start: 30000
+  eval_seeds: [42, 2026, 17, 777, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  phrase_overrides:
+    mug:
+      object_phrase: "ceramic mugs"
+      countgd_text: "ceramic mugs"
+    bottle:
+      object_phrase: "water bottles"
+      countgd_text: "water bottles"
+
+sde:
+  kernel: ddim_cps
+  eta: 2.0
+  noise_coeff: 2.0
+  std_cap_on_next: 0.95
+  min_std: 1.0e-6
+
+distillation:
+  # Transition indices [branch, end_step): branch=3 and end_step=15 -> 12 steps.
+  end_step: 15
+  weight: 0.05
+  loss: velocity_mse
+  sequential_backward: true
+
+loss:
+  distillation: multi_step_velocity_mse
+  teacher_weight: 0.05
+  reward_gate: positive_reward_gain
+  reference_kl_weight: 0.01
+
+budget:
+  n_train_groups: 960
+  n_rounds: 16
+  groups_per_round: 60
+  max_images: 4800
+  max_updates_per_round: 60
+  quota:
+    5: 160
+    6: 160
+    7: 160
+    8: 160
+    9: 160
+    10: 160
+
+eval:
+  n_images: 960
+  use_teacher: false
+  use_best_of_g: false
+  ode_only: true
+  decode_batch_size: 4

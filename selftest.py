@@ -24,6 +24,7 @@ from .core.transition import (
     plan_sde_std,
 )
 from .losses.distillation import weighted_velocity_mse
+from .trainers.fast_grpo import backward_multistep_distillation
 from .losses.grpo import grpo_clip_loss, group_advantages, importance_ratio
 from .train import comparison_table
 
@@ -61,6 +62,21 @@ class _TinyFlux(nn.Module):
 def run_selftest() -> None:
     cfg_a = load_experiment_config("distill")
     cfg_b = load_experiment_config("fast_grpo")
+    delivery = load_experiment_config(path="configs/fast_grpo_full960_branch3_eta1.yaml")
+    assert delivery["branch_after_completed_steps"] == 3
+    assert delivery["sde"]["eta"] == 1.0
+    assert delivery["distillation"]["end_step"] == 15
+    assert delivery["budget"]["n_train_groups"] == 960
+    assert delivery["eval"]["n_images"] == 960
+    assert delivery["prompt"]["phrase_overrides"]["mug"]["object_phrase"] == "ceramic mugs"
+    delivery_train = build_train_cases(delivery)
+    delivery_eval = build_eval_cases(delivery)
+    assert len(delivery_train) == len(delivery_eval) == 960
+    assert {c.seed for c in delivery_train}.isdisjoint({c.seed for c in delivery_eval})
+    assert {c.target for c in delivery_train} == {5, 6, 7, 8, 9, 10}
+    assert all(sum(c.target == n for c in delivery_train) == 160 for n in range(5, 11))
+    assert next(c for c in delivery_train if c.category == "mug").object_phrase == "ceramic mugs"
+    assert next(c for c in delivery_train if c.category == "bottle").object_phrase == "water bottles"
     assert cfg_a["method"] == "reward_gated_distillation"
     assert cfg_b["method"] == "structure_assisted_flow_grpo_fast"
     assert cfg_a["use_grpo"] is False and cfg_a["use_sde"] is False
@@ -158,6 +174,33 @@ def run_selftest() -> None:
     assert math.isclose(float(mse), 0.5, rel_tol=1e-5)
     single = weighted_velocity_mse(torch.zeros(1, 3), torch.ones(1, 3), torch.tensor([0.4]))
     assert math.isclose(float(single), 0.4, rel_tol=1e-5)
+
+    # Exercise the exact later-step backward helper without loading FLUX or a GPU.
+    class _FakeRuntime:
+        device = torch.device("cpu")
+        def __init__(self): self.calls = []
+        def predict_guided(self, x, step, prompt, mode, grad=False):
+            self.calls.append((step, prompt, mode, grad))
+            return x * self.scale
+        scale = torch.nn.Parameter(torch.tensor(0.0))
+    fake = _FakeRuntime()
+    fake.scale.requires_grad_(True)
+    fake.predict_guided = lambda x, step, prompt, mode, grad=False: x * fake.scale
+    from .core.sampler import GRPOGroup
+    dummy = torch.ones(1, 2)
+    group = GRPOGroup(case={"plain_prompt":"plain"}, step=3, x_s=dummy, std=torch.zeros(1),
+        members=[], advantages=torch.zeros(0), usable_grpo=False, teacher_mean=None, teacher_weight=1.0,
+        teacher_trace=[{"step":3,"latents":dummy,"velocity":torch.zeros_like(dummy)},
+                       {"step":4,"latents":dummy*2,"velocity":torch.ones_like(dummy)}])
+    stats = {"distill":0.0}
+    backward_multistep_distillation(fake, group, {"loss":{"distillation":"multi_step_velocity_mse"},
+        "distillation":{"weight":0.05}}, stats)
+    assert fake.scale.grad is not None and fake.scale.grad.abs().item() > 0
+    assert math.isclose(stats["distill"], 0.025, rel_tol=1e-5)
+    legacy_stats = {"distill":0.0}
+    before = len(fake.calls)
+    backward_multistep_distillation(fake, group, {"loss":{"distillation":"gaussian_mean_kl"}}, legacy_stats)
+    assert len(fake.calls) == before
     kl = gaussian_mean_kl(teacher[:1], student[:1], torch.tensor([0.5]))
     expected = (1.0) / (2.0 * 0.25)
     assert math.isclose(float(kl), expected, rel_tol=1e-5)

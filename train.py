@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compare", action="store_true", help="Print Version A vs B config table and exit")
     parser.add_argument("--selftest", action="store_true", help="Run CPU unit checks and exit")
     parser.add_argument("--limit", type=int, default=0, help="Optional cap on train units for a debug run")
+    parser.add_argument("--force-teacher-smoke", action="store_true", help="Smoke only: force teacher trigger and use mock reward; requires --limit 1")
     parser.add_argument("--reward-backend", default=None, help="Override reward.backend (countgd|mock)")
     parser.add_argument(
         "--probe-teacher",
@@ -70,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Regenerate teacher-only structured ODE images for these case ids and exit",
     )
     parser.add_argument("--lora", default=None, help="Optional LoRA checkpoint for --probe-teacher")
+    parser.add_argument("--eval-lora", default=None, help="Evaluate this LoRA on fixed plain-prompt ODE cases and exit")
     args = parser.parse_args(argv)
 
     if args.selftest:
@@ -82,8 +84,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cfg = load_experiment_config(args.method, args.config)
-    if args.reward_backend:
-        cfg.setdefault("reward", {})["backend"] = args.reward_backend
+    if args.force_teacher_smoke:
+        if args.limit != 1:
+            parser.error("--force-teacher-smoke requires --limit 1")
+        cfg["teacher_trigger"] = "always"
+        cfg.setdefault("reward", {})["backend"] = "mock"
+    if args.eval_lora:
+        from .evaluate_lora import main as evaluate_lora_main
+        eval_args = ["--config", str(args.config or cfg.get("_config_path")), "--lora", args.eval_lora]
+        if args.limit:
+            eval_args += ["--limit", str(args.limit)]
+        return evaluate_lora_main(eval_args)
     if args.probe_teacher:
         from .probe_teacher import probe_teacher_cases
 

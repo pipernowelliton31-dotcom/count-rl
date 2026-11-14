@@ -125,6 +125,7 @@ class GRPOGroup:
     usable_grpo: bool
     teacher_mean: torch.Tensor | None
     teacher_weight: float
+    teacher_trace: list[dict[str, Any]] = field(default_factory=list)
     teacher_reward: float | None = None
     teacher_count: int | None = None
     skipped_teacher: bool = False
@@ -274,6 +275,10 @@ def collect_grpo_group(
     from ..losses.grpo import group_advantages
 
     timer = StageTimer(runtime)
+    group_t0 = time.perf_counter()
+    torch_mod = getattr(runtime, "torch", None)
+    if torch_mod is not None and torch_mod.cuda.is_available():
+        torch_mod.cuda.reset_peak_memory_stats(runtime.device)
     branch = int(cfg["branch_after_completed_steps"])
     group_size = int(cfg.get("group_size") or 4)
     trigger = str(cfg.get("teacher_trigger", "half_inexact"))
@@ -334,6 +339,7 @@ def collect_grpo_group(
         rewards = torch.tensor([m.reward for m in members], dtype=torch.float32)
         advantages, usable = group_advantages(rewards, eps=float(cfg.get("loss", {}).get("advantage_std_eps", 1e-8)))
     teacher_mean = None
+    teacher_trace: list[dict[str, Any]] = []
     teacher_weight = 0.0
     teacher_reward = None
     teacher_count = None
@@ -348,10 +354,18 @@ def collect_grpo_group(
             rng = random.Random(int(case.seed))
             teacher_anchor = int(rng.choice(wrong_ids))
             anchor = members[teacher_anchor]
+            distill_mode = str(cfg.get("loss", {}).get("distillation", "gaussian_mean_kl"))
             with timer.stage("teacher_sec"):
-                teacher, _v_teacher, latent_t = runtime.run_teacher_structured_ode(
-                    x_s, v_old, step, case.plain_prompt, case.structured_prompt
-                )
+                if distill_mode == "multi_step_velocity_mse":
+                    teacher, _v_teacher, latent_t, teacher_trace = runtime.run_teacher_structured_ode(
+                        x_s, v_old, step, case.plain_prompt, case.structured_prompt,
+                        trace_end_step=int(cfg.get("distillation", {}).get("end_step", 15)),
+                        return_trace=True,
+                    )
+                else:
+                    teacher, _v_teacher, latent_t = runtime.run_teacher_structured_ode(
+                        x_s, v_old, step, case.plain_prompt, case.structured_prompt
+                    )
             images_t, t_timing = runtime.decode_batch([latent_t])
             timer.merge_decode(t_timing)
             path_t = _save(image_root, case.id, "teacher", images_t[0])
@@ -368,6 +382,10 @@ def collect_grpo_group(
                 skipped = False
             else:
                 skipped = True
+    timer.times["group_total_sec"] = time.perf_counter() - group_t0
+    if torch_mod is not None and torch_mod.cuda.is_available():
+        timer.times["gpu_peak_allocated_mb"] = float(torch_mod.cuda.max_memory_allocated(runtime.device) / (1024 ** 2))
+        timer.times["gpu_peak_reserved_mb"] = float(torch_mod.cuda.max_memory_reserved(runtime.device) / (1024 ** 2))
     return GRPOGroup(
         case=case.as_dict(),
         step=step,
@@ -378,6 +396,7 @@ def collect_grpo_group(
         usable_grpo=usable,
         teacher_mean=teacher_mean,
         teacher_weight=float(teacher_weight),
+        teacher_trace=teacher_trace,
         teacher_reward=teacher_reward,
         teacher_count=teacher_count,
         skipped_teacher=skipped,

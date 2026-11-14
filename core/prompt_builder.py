@@ -104,12 +104,14 @@ class PromptPair:
     structured: str
 
 
-def build_prompt_pair(category: str, target: int) -> PromptPair:
+def build_prompt_pair(category: str, target: int, phrase_overrides: dict | None = None) -> PromptPair:
     if category not in CATEGORIES:
         raise KeyError(f"Unknown category {category!r}")
     if target not in NUMBER_WORDS:
         raise KeyError(f"Unsupported target {target}")
-    meta = CATEGORIES[category]
+    meta = dict(CATEGORIES[category])
+    if phrase_overrides and category in phrase_overrides:
+        meta.update(phrase_overrides[category])
     phrase = meta["object_phrase"]
     return PromptPair(
         category=category,

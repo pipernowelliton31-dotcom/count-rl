@@ -35,7 +35,7 @@ def _old_teacher_rows(path: Path) -> dict[str, dict[str, Any]]:
 def probe_teacher_cases(cfg: dict[str, Any], case_ids: list[str], lora_path: str | None = None) -> Path:
     cfg = dict(cfg)
     cfg["method"] = f"{cfg.get('method', 'structure_assisted_flow_grpo_fast')}_teacher_probe"
-    cases = [parse_case_id(case_id) for case_id in case_ids]
+    cases = [parse_case_id(case_id, phrase_overrides=cfg.get("prompt", {}).get("phrase_overrides")) for case_id in case_ids]
     runtime = build_runtime(cfg, cases)
     if lora_path:
         runtime.lora.load(lora_path)

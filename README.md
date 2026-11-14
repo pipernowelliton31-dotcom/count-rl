@@ -8,10 +8,10 @@
 | 入口 | `--method distill` | `--method fast_grpo` |
 | Student | 1 条普通 prompt ODE | **4** 条普通 prompt SDE（group size=4） |
 | Teacher | 至多 1 条结构残差 ODE | 至多 1 条结构残差 SDE（配对一个错误 student 的噪声） |
-| 分支点 | 完成 **2** 个 ODE step 之后的下一次转移 | 同左 |
+| 分支点 | 完成 **2** 个 ODE step 之后的下一次转移 | 默认配置同左；全量交付配置为 **3** |
 | SDE / GRPO | 关 | 开，单步随机转移 |
 | Reward | 只筛选教师 | Group Advantage **加上** 教师筛选 |
-| 损失 | \(w\,\mathrm{MSE}(v_\phi,v_T)+0.1\mathcal L_{\mathrm{keep}}\) | \(\mathcal L_{\mathrm{GRPO}}+\lambda w\,\mathrm{KL}_{\mathrm{dim}}+\beta\mathcal L_{\mathrm{ref}}\) |
+| 损失 | \(w\,\mathrm{MSE}(v_\phi,v_T)+0.1\mathcal L_{\mathrm{keep}}\) | \(\mathcal L_{\mathrm{GRPO}}+\lambda_D w\,\mathrm{MSE}_{3:15}+\beta\mathcal L_{\mathrm{ref}}\)（全量交付配置） |
 | 学习率 | \(1\times10^{-5}\) | \(5\times10^{-6}\) |
 | 预算单位 | 240 个案例 | 96 个 group |
 | 终点图上限 | 480（1+1） | 480（4+1） |
@@ -84,3 +84,23 @@ CountGD 路径写在 `configs/common.yaml` 的 `reward` 段，与现有 V5.1 管
 - Version B：group reward std、零 Advantage 比例
 - 实际终点图数量和 GPU 时间（同样 480 张图，B 的 Transformer 调用仍更多）
 - 布局是否塌成模板；不能把准确率上升直接说成抽象计数能力
+
+
+## Full 960-group delivery run (branch 3, eta 2.0)
+
+The handoff configuration is `configs/fast_grpo_full960_branch3_eta2.yaml`. It trains 960 groups across 10 categories and targets 5-10 (160 groups per target), uses shared branch index 3, eta=2.0, and reward-gated multi-step ODE velocity distillation over transition indices [3, 15). Mug/bottle phrases are overridden only for this config (`ceramic mugs`, `water bottles`); legacy configs remain unchanged.
+
+Run from `/home/lsj/flux2-count` with the project environment activated:
+
+```bash
+python -m count_rl --selftest
+python -m count_rl --config count_rl/configs/fast_grpo_full960_branch3_eta2.yaml --dry-run
+# One-group smoke run; use only after selecting an available GPU.
+CUDA_VISIBLE_DEVICES=<free_gpu_id> python -m count_rl --config count_rl/configs/fast_grpo_full960_branch3_eta2.yaml --limit 1
+# Evaluate final LoRA on the fixed 960-case plain-prompt ODE set.
+python -m count_rl --config count_rl/configs/fast_grpo_full960_branch3_eta2.yaml --eval-lora /path/to/lora_final.pt
+```
+
+The trainer logs per-group collection time/peak CUDA memory and per-update time/peak CUDA memory. Do not start the smoke run on a GPU that is already occupied.
+
+The eta=1.0 configuration (`configs/fast_grpo_full960_branch3_eta1.yaml`) remains unchanged for the already running mini15 test, reproducibility, and comparison. The eta=2.0 configuration is for NEW training launches; do not relabel the running mini15 results.

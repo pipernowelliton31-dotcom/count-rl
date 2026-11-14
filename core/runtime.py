@@ -201,16 +201,37 @@ class Flux2Runtime:
     def teacher_velocity_from_old(self, v_old, latents, step: int, plain: str, structured: str):
         return v_old + self.gamma * self.structure_residual(latents, step, plain, structured)
 
-    def run_teacher_structured_ode(self, latents, v_old, step: int, plain: str, structured: str):
-        """Branch residual as Euler ODE, then finish with the structured prompt.
+    def run_teacher_structured_ode(
+        self, latents, v_old, step: int, plain: str, structured: str,
+        *, trace_end_step: int | None = None, return_trace: bool = False,
+    ):
+        """Take the residual Euler branch, then a structured ODE tail.
 
-        No teacher SDE. Distillation still targets this first Euler mean; the
-        remaining steps use structured CFG so the final image can keep the layout.
+        When requested, record detached CPU states/velocities for transition
+        indices [step, trace_end_step). Teacher trajectory never builds a grad graph.
+        Default return shape remains backward-compatible (3 items).
         """
-        v_teacher = self.teacher_velocity_from_old(v_old, latents, step, plain, structured)
-        teacher = self.apply_kernel(latents, v_teacher, step, use_sde=False)
-        next_latents, _ = self.finish_tail(teacher.next_latents, structured, step + 1, "old")
-        return teacher, v_teacher, next_latents
+        trace = []
+        x = latents
+        v_teacher = self.teacher_velocity_from_old(v_old, x, step, plain, structured)
+        if return_trace and (trace_end_step is None or step < trace_end_step):
+            trace.append({"step": step, "latents": x.detach().to("cpu"),
+                          "velocity": v_teacher.detach().to("cpu"),
+                          "timestep": float(self.timesteps[step].detach().float().cpu())})
+        teacher = self.apply_kernel(x, v_teacher, step, use_sde=False)
+        x = teacher.next_latents
+        end = min(self.steps, int(trace_end_step)) if trace_end_step is not None else self.steps
+        for k in range(step + 1, end):
+            v = self.predict_guided(x, k, structured, "old", grad=False)
+            if return_trace:
+                trace.append({"step": k, "latents": x.detach().to("cpu"),
+                              "velocity": v.detach().to("cpu"),
+                              "timestep": float(self.timesteps[k].detach().float().cpu())})
+            x = self.apply_kernel(x, v, k, use_sde=False).next_latents
+        x, _ = self.finish_tail(x, structured, end, "old")
+        if return_trace:
+            return teacher, v_teacher, x, trace
+        return teacher, v_teacher, x
 
     def apply_kernel(self, latents, velocity, step: int, *, use_sde: bool, noise=None, generator=None) -> Transition:
         _, sigma, sigma_next = self.sigma_pair(step)
