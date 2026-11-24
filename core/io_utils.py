@@ -22,6 +22,21 @@ def atomic_json(path: Path, value: Any) -> None:
     atomic_text(path, json.dumps(value, indent=2, ensure_ascii=False, default=str) + "\n")
 
 
+def atomic_torch_save(path: Path, value: Any) -> None:
+    """Write full torch checkpoint to a temporary sibling, then rename."""
+    import torch
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        torch.save(value, temporary)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
 def append_jsonl(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:

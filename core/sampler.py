@@ -377,7 +377,13 @@ def collect_grpo_group(
             teacher_reward = result_t.reward
             teacher_count = result_t.count
             if result_t.reliable:
-                teacher_weight = evaluator.gate(result_t.reward, anchor.reward)
+                gate_mode = str(cfg.get("loss", {}).get("reward_gate", "positive_reward_gain"))
+                if gate_mode == "strict_exact":
+                    teacher_weight = 1.0 if result_t.exact else 0.0
+                elif gate_mode == "positive_reward_gain":
+                    teacher_weight = evaluator.gate(result_t.reward, anchor.reward)
+                else:
+                    raise ValueError(f"Unsupported loss.reward_gate={gate_mode!r}")
                 teacher_mean = teacher.mean.detach().to("cpu")
                 skipped = False
             else:

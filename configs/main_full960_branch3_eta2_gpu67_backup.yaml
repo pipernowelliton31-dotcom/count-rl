@@ -1,0 +1,19 @@
+# Same main experiment as official 4GPU fast_grpo_full960_branch3_eta2.yaml.
+# Two ranks with two sequential groups per rank per optimizer slot:
+# same global groups per update (4), same 960 groups and 16 rounds.
+extends: fast_grpo_full960_branch3_eta2.yaml
+experiment:
+  name: main_full960_branch3_eta2_backup_gpu67
+  output_root: /data/storage22t/lsj/main_full960_backup_gpu67_20261113/outputs
+runtime:
+  num_gpus: 2
+  max_gpus: 2
+# Safe pure-PyTorch deformable attention backend for CountGD subprocesses on RTX 6000 Ada
+# (prevents illegal memory access / CUBLAS errors on GPU7 while preserving identical detections).
+reward:
+  deform_attn_backend: pytorch
+backup:
+  source_config: /data/storage22t/lsj/eth_full960/count_rl/configs/fast_grpo_full960_branch3_eta2.yaml
+  source_world_size: 4
+  groups_per_physical_rank_per_update: 2
+  effective_groups_per_update: 4

@@ -1,0 +1,11 @@
+# One real group on one GPU. Not a 50-step exact-count result.
+extends: fast_grpo_full960_branch3_eta2.yaml
+
+experiment:
+  name: smoke_grpo_1gpu
+
+runtime:
+  num_gpus: 1
+  max_gpus: 4
+  min_gpu_memory_gb: 20
+  memory_slack_gb: 4

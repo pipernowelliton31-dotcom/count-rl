@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import gc
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+from .distributed import current, device_string
 from .lora import LoRAManager, LoraMode
 from .teacher import propose_teacher
 from .transition import Transition, apply_transition, sde_mean_from_velocity
@@ -30,7 +32,19 @@ class Flux2Runtime:
             torch_dtype=torch.bfloat16,
             local_files_only=bool(model_cfg.get("local_files_only", True)),
         )
-        self.pipe.to("cuda")
+        self._staged_init = (
+            os.environ.get("COUNT_RL_STAGED_INIT_GPU0") == "1"
+            and current().world == 4
+        )
+        if self._staged_init:
+            # GPU0 has a separate user's ~16GiB allocation. Encode every prompt
+            # with Qwen on CUDA FIRST, while transformer and VAE remain CPU.
+            # Only after Qwen is offloaded, put transformer+VAE on CUDA.
+            # This preserves exact GPU Qwen BF16 embedding numerics and LoRA weights.
+            self.pipe.text_encoder.to(device_string())
+            print(f"[STAGED_MODEL_INIT] rank={current().rank} Qwen_GPU transformer_CPU vae_CPU",flush=True)
+        else:
+            self.pipe.to(device_string())
         self.pipe.set_progress_bar_config(disable=True)
         self.pipe._guidance_scale = self.guidance
         self.pipe._attention_kwargs = None
@@ -42,7 +56,7 @@ class Flux2Runtime:
                 vae.enable_tiling()
         if model_cfg.get("gradient_checkpointing", True) and hasattr(self.pipe.transformer, "enable_gradient_checkpointing"):
             self.pipe.transformer.enable_gradient_checkpointing()
-        self.device = self.pipe._execution_device
+        self.device = torch.device(device_string()) if self._staged_init else self.pipe._execution_device
         self.lora = LoRAManager(self.pipe.transformer, cfg)
         self.prompt_cache: dict[str, tuple[Any, Any]] = {}
         self.timesteps = None
@@ -53,7 +67,10 @@ class Flux2Runtime:
             "transformers": transformers.__version__,
             "accelerate": accelerate.__version__,
             "cuda": torch.version.cuda,
-            "gpu": torch.cuda.get_device_name(0),
+            "gpu": torch.cuda.get_device_name(current().local_rank if current().world > 1 else 0),
+            "rank": current().rank,
+            "local_rank": current().local_rank,
+            "world_size": current().world,
             "pipeline": type(self.pipe).__name__,
             "n_lora": self.lora.n_trainable(),
         }
@@ -86,13 +103,24 @@ class Flux2Runtime:
         return self.prompt_cache[prompt]
 
     def precompute_prompts(self, texts: list[str]) -> None:
-        for text in texts:
+        print(f"[PRECOMPUTE_START] rank={current().rank} prompts={len(texts)} staged={self._staged_init}",flush=True)
+        for i, text in enumerate(texts):
             self.encode(text)
+            if (i+1)%30 == 0:
+                print(f"[PROMPTS_ENCODED] rank={current().rank} {i+1}/{len(texts)}",flush=True)
         if self.cfg["model"].get("offload_text_encoder_after_precompute", True):
             encoder = getattr(self.pipe, "text_encoder", None)
             if encoder is not None:
                 encoder.to("cpu")
                 self.torch.cuda.empty_cache()
+        if self._staged_init:
+            if self.pipe.text_encoder.device.type != "cpu":
+                raise RuntimeError("Qwen encoder not offloaded before transformer staging")
+            self.pipe.transformer.to(self.device)
+            self.pipe.vae.to(self.device)
+            self.torch.cuda.empty_cache()
+            free,total=self.torch.cuda.mem_get_info(self.device)
+            print(f"[STAGED_TRANSFORMER_READY] rank={current().rank} free_MiB={free//1048576} total_MiB={total//1048576}",flush=True)
 
     def prepare_latents(self, seed: int):
         torch = self.torch

@@ -1,0 +1,6 @@
+# Round-9 boundary experiment: all FLUX.2 Klein components stay on GPU.
+# The original four-rank training protocol, prompts, optimizer and ODE are unchanged.
+extends: main_full960_branch3_eta2_resume_4gpu.yaml
+model:
+  offload_text_encoder_after_precompute: false
+  decode_offload_transformer: false

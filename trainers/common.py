@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.cases import TrainingCase, build_eval_cases, build_train_cases, interleave_by_target_rounds, unique_prompts
+from ..core.distributed import current_rank, device_string, metrics_filename
 from ..core.io_utils import append_jsonl, atomic_json, now_stamp
 from ..core.reward import RewardEvaluator
 from ..core.runtime import Flux2Runtime
@@ -14,11 +15,23 @@ from ..core.runtime import Flux2Runtime
 def build_runtime(cfg: dict[str, Any], cases: list[TrainingCase]) -> Flux2Runtime:
     runtime = Flux2Runtime(cfg)
     runtime.precompute_prompts(unique_prompts(cases))
+    # The staged 4-GPU loader only moves transformer LoRA to CUDA after prompt
+    # precomputation; NCCL broadcast must occur *after* that device move.
+    runtime.lora.synchronize_initial_parameters()
     runtime.snapshot_old()
     return runtime
 
 
 def build_evaluator(cfg: dict[str, Any], mock_fn=None) -> RewardEvaluator:
+    reward_cfg = cfg.setdefault("reward", {})
+    if mock_fn is None and str(reward_cfg.get("backend", "countgd")) != "mock":
+        python = str(reward_cfg.get("countgd_python") or "")
+        if not python or not Path(python).is_file():
+            raise SystemExit(
+                "COUNTGD_PYTHON is unset or is not an executable file. "
+                "Export it to the CountGD environment python before training."
+            )
+        reward_cfg["device"] = device_string()
     return RewardEvaluator(cfg, mock_fn=mock_fn)
 
 
@@ -26,6 +39,7 @@ def make_optimizer(runtime: Flux2Runtime, cfg: dict[str, Any]):
     import torch
 
     opt_cfg = cfg["optimizer"]
+    runtime.lora.assert_master_fp32()
     params = runtime.lora.trainable_parameters()
     return torch.optim.AdamW(
         params,
@@ -68,7 +82,8 @@ def output_dir(cfg: dict[str, Any]) -> Path:
 def log_metrics(root: Path, payload: dict[str, Any]) -> None:
     payload = dict(payload)
     payload["time"] = now_stamp()
-    append_jsonl(root / "logs" / "metrics.jsonl", payload)
+    payload["rank"] = current_rank()
+    append_jsonl(root / "logs" / metrics_filename(), payload)
     print(payload, flush=True)
 
 

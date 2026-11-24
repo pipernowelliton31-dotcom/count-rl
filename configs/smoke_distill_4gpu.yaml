@@ -1,0 +1,10 @@
+extends: distill_4gpu.yaml
+
+experiment:
+  name: smoke_distill_4gpu
+
+runtime:
+  num_gpus: 4
+  max_gpus: 4
+  min_gpu_memory_gb: 40
+  memory_slack_gb: 4

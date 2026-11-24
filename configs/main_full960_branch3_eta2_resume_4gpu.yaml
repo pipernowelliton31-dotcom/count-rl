@@ -1,0 +1,13 @@
+# One-node 2-to-4 rank recovery of the existing 960-group experiment.
+# Only for use with the independent count_rl_4gpu package and an opt-in launcher.
+extends: main_full960_branch3_eta2_gpu67_backup.yaml
+experiment:
+  name: main_full960_branch3_eta2_resume_4gpu
+runtime:
+  num_gpus: 4
+  max_gpus: 4
+backup:
+  groups_per_physical_rank_per_update: 1
+  effective_groups_per_update: 4
+migration:
+  allow_world_size_2_to_4: true

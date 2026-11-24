@@ -1,0 +1,13 @@
+# Version A on 4 GPUs. Cases are sharded; each step averages the ranks that have a teacher gate.
+extends: distill.yaml
+
+experiment:
+  name: distill_4gpu
+
+runtime:
+  num_gpus: 4
+  max_gpus: 4
+  min_gpu_memory_gb: 40
+  memory_slack_gb: 4
+  single_node: true
+  distributed_backend: nccl

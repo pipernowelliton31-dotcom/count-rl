@@ -72,3 +72,12 @@ eval:
   use_best_of_g: false
   ode_only: true
   decode_batch_size: 4
+
+# Formal launch is one node, 4 processes, one GPU each. 1-GPU debug uses the smoke config.
+runtime:
+  num_gpus: 4
+  max_gpus: 4
+  min_gpu_memory_gb: 40
+  memory_slack_gb: 4
+  single_node: true
+  distributed_backend: nccl

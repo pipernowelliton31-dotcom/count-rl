@@ -12,9 +12,22 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 
-def count_reward(hat_n: int | float, target: int, exact_bonus: float = 0.3) -> float:
-    err = abs(float(hat_n) - float(target))
-    return (1.0 / (1.0 + err)) + (exact_bonus if err == 0 else 0.0)
+def count_reward(
+    hat_n: int | float, target: int, exact_bonus: float = 0.3,
+    overcount_penalty: float = 0.0,
+) -> float:
+    """Bounded count reward. Extra count is penalized asymmetrically when enabled.
+
+    Default overcount_penalty=0 reproduces all historical baseline rewards.
+    """
+    import math
+    penalty = float(overcount_penalty)
+    if not math.isfinite(penalty) or penalty < 0:
+        raise ValueError("overcount_penalty must be finite and nonnegative")
+    signed_err = float(hat_n) - float(target)
+    err = abs(signed_err)
+    denom = 1.0 + err + penalty * max(0.0, signed_err)
+    return (1.0 / denom) + (exact_bonus if err == 0 else 0.0)
 
 
 def reward_gate(reward_teacher: float, reward_student: float, gain_scale: float = 0.5) -> float:
@@ -50,6 +63,9 @@ class RewardEvaluator:
         reward_cfg = cfg.get("reward", {})
         self.backend = str(reward_cfg.get("backend", "countgd"))
         self.exact_bonus = float(reward_cfg.get("exact_bonus", 0.3))
+        self.overcount_penalty = float(reward_cfg.get("overcount_penalty", 0.0))
+        if not __import__("math").isfinite(self.overcount_penalty) or self.overcount_penalty < 0:
+            raise ValueError("reward.overcount_penalty must be finite and >= 0")
         self.gain_scale = float(reward_cfg.get("gain_scale", 0.5))
         self.max_plausible = int(reward_cfg.get("max_plausible_count", 40))
         self.threshold = float(reward_cfg.get("confidence_threshold", 0.26))
@@ -68,6 +84,9 @@ class RewardEvaluator:
         self._runner = None
         self._worker: subprocess.Popen | None = None
         self.max_retries = int(reward_cfg.get("max_retries", 2))
+        self.deform_attn_backend = str(reward_cfg.get("deform_attn_backend", "cuda")).lower()
+        if self.deform_attn_backend not in {"cuda", "pytorch"}:
+            raise ValueError(f"Invalid reward.deform_attn_backend={self.deform_attn_backend!r}")
 
     def gate(self, reward_teacher: float, reward_student: float) -> float:
         return reward_gate(reward_teacher, reward_student, self.gain_scale)
@@ -147,8 +166,12 @@ class RewardEvaluator:
     def _ensure_worker(self) -> subprocess.Popen:
         if self._worker is not None and self._worker.poll() is None:
             return self._worker
-        Path("/tmp/count_rl_smoke").mkdir(parents=True, exist_ok=True)
+        log_dir = Path(os.environ.get("COUNTGD_WORKER_LOG_DIR", "/tmp/count_rl_smoke"))
+        log_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
+        env["COUNTGD_DEFORM_ATTN_BACKEND"] = self.deform_attn_backend
+        rank = os.environ.get("LOCAL_RANK", "standalone")
+        worker_log = log_dir / f"countgd_worker_rank{rank}.err"
         proc = subprocess.Popen(
             [
                 str(self.countgd_python),
@@ -161,7 +184,7 @@ class RewardEvaluator:
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=open("/tmp/count_rl_smoke/countgd_worker.err", "a"),
+            stderr=open(worker_log, "a"),
             env=env,
             text=True,
             bufsize=1,
@@ -208,7 +231,7 @@ class RewardEvaluator:
         while True:
             line = stdout.readline()
             if not line:
-                raise RuntimeError(f"CountGD worker died during {timeout_label}; see /tmp/count_rl_smoke/countgd_worker.err")
+                raise RuntimeError(f"CountGD worker died during {timeout_label}; inspect COUNTGD_WORKER_LOG_DIR")
             line = line.strip()
             if not line.startswith("COUNTGD_MSG "):
                 continue
@@ -271,7 +294,7 @@ class RewardEvaluator:
         if count < 0 or count > self.max_plausible:
             return RewardResult(
                 count=count,
-                reward=count_reward(count, target, self.exact_bonus),
+                reward=count_reward(count, target, self.exact_bonus, self.overcount_penalty),
                 exact=False,
                 reliable=False,
                 reason="implausible_count",
@@ -280,7 +303,7 @@ class RewardEvaluator:
         exact = is_exact(count, target)
         return RewardResult(
             count=count,
-            reward=count_reward(count, target, self.exact_bonus),
+            reward=count_reward(count, target, self.exact_bonus, self.overcount_penalty),
             exact=exact,
             reliable=True,
             extra=extra,
@@ -288,7 +311,7 @@ class RewardEvaluator:
 
 
 _COUNTGD_WORKER = r"""
-import json, sys, traceback
+import json, os, sys, traceback
 from pathlib import Path
 
 layout_root, countgd_root, device = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -301,8 +324,22 @@ def emit(payload):
 
 try:
     assets = discover_countgd_assets(countgd_root=countgd_root)
+    backend = os.environ.get("COUNTGD_DEFORM_ATTN_BACKEND", "cuda").lower()
+    if backend == "pytorch":
+        # Inference-only alternative to the native C++/CUDA kernel, which crashes
+        # with illegal memory access intermittently on physical GPU 4.
+        # Patch only THIS isolated reward subprocess, never shared CountGD files.
+        sys.path.insert(0, str(countgd_root))
+        from models.GroundingDINO import ms_deform_attn as _deform
+        def _safe_deform_attn(value, spatial_shapes, level_start_index, sampling_locations, attention_weights, im2col_step):
+            return _deform.multi_scale_deformable_attn_pytorch(
+                value, spatial_shapes, sampling_locations, attention_weights
+            )
+        _deform.MultiScaleDeformableAttnFunction.apply = staticmethod(_safe_deform_attn)
+    elif backend != "cuda":
+        raise ValueError(f"Invalid COUNTGD_DEFORM_ATTN_BACKEND={backend!r}")
     runner = CountGDRunner(assets, device=device, trust_checkpoint=True)
-    emit({"ok": True, "event": "ready"})
+    emit({"ok": True, "event": "ready", "backend": backend})
 except Exception:
     emit({"ok": False, "error": traceback.format_exc()})
     raise SystemExit(1)

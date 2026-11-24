@@ -4,11 +4,12 @@
 experiment:
   schema: 1
   name: structure_count_rl
-  output_root: /data/storage22t/lsj/flux2-count/outputs/count_rl
+  # bundle: is resolved from the eth_full960 directory, not this file.
+  output_root: bundle:outputs
 
 model:
   backbone: FLUX.2-klein-base-9B
-  path: /data/storage22t/lsj/models/FLUX.2-klein-base-9B
+  path: bundle:weights/FLUX.2-klein-base-9B
   local_files_only: true
   dtype: bfloat16
   height: 1024
@@ -54,10 +55,11 @@ prompt:
 
 reward:
   backend: countgd
-  countgd_root: /data/storage22t/lsj/repos/CountGD
-  # t2i (numpy 2) cannot import CountGD; score via this dedicated env instead.
-  countgd_python: /data/storage22t/lsj/conda/envs/countgd/bin/python
-  layout_v51_root: /home/lsj/layout_v51_conservative
+  countgd_root: bundle:third_party/CountGD
+  # Separate env: the training env's numpy cannot import CountGD.
+  # scripts/train.sh requires COUNTGD_PYTHON.
+  countgd_python: ${COUNTGD_PYTHON}
+  layout_v51_root: bundle:third_party/layout_v51
   device: cuda
   confidence_threshold: 0.26
   exact_bonus: 0.3

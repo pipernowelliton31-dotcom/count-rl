@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import os
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
+# count_rl/core/config.py -> eth_full960/
+BUNDLE_ROOT = Path(__file__).resolve().parents[2]
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 METHOD_FILES = {
     "reward_gated_distillation": "distill.yaml",
@@ -42,6 +47,28 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
+def _resolve_text(value: str) -> str:
+    if value.startswith("bundle:"):
+        value = str((BUNDLE_ROOT / value[len("bundle:") :]).resolve())
+
+    def replace(match: re.Match[str]) -> str:
+        return os.environ.get(match.group(1), "")
+
+    if "${" in value:
+        value = _ENV_REF.sub(replace, value)
+    return value
+
+
+def _resolve_tree(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _resolve_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_resolve_tree(item) for item in value]
+    if isinstance(value, str) and (value.startswith("bundle:") or "${" in value):
+        return _resolve_text(value)
+    return value
+
+
 def load_yaml_config(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     if not path.is_file():
@@ -58,7 +85,7 @@ def load_yaml_config(path: str | Path) -> dict[str, Any]:
     else:
         merged = deepcopy(raw)
     merged["_config_path"] = str(path.resolve())
-    return merged
+    return _resolve_tree(merged)
 
 
 def load_experiment_config(method: str | None = None, path: str | Path | None = None) -> dict[str, Any]:

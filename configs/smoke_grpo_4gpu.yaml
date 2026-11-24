@@ -1,0 +1,11 @@
+# Four groups, one per GPU, one synchronized optimizer step. Not the 960-group run.
+extends: fast_grpo_full960_branch3_eta2.yaml
+
+experiment:
+  name: smoke_grpo_4gpu
+
+runtime:
+  num_gpus: 4
+  max_gpus: 4
+  min_gpu_memory_gb: 40
+  memory_slack_gb: 4

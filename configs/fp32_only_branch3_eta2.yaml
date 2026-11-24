@@ -1,0 +1,5 @@
+# FP32 numerical precision upgrade only: no Fisher, no eta/branch change.
+extends: fast_grpo_full960_branch3_eta2.yaml
+experiment:
+  name: full960_fp32_lora_precision_only
+  resume_into_new_run: true

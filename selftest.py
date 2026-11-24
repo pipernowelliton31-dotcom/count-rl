@@ -244,8 +244,11 @@ def run_selftest() -> None:
     fp16_host = _TinyFlux().to(dtype=torch.float16)
     mgr_fp16 = LoRAManager(fp16_host, lora_cfg)
     layer = mgr_fp16.layers[0]
-    assert layer.lora_A.weight.dtype == torch.float16
-    assert layer.old_A.dtype == torch.float16
+    # FP32 master/snapshot while the frozen host and forward compute stay FP16.
+    assert layer.lora_A.weight.dtype == torch.float32
+    assert layer.lora_B.weight.dtype == torch.float32
+    assert layer.old_A.dtype == torch.float32
+    assert layer.old_B.dtype == torch.float32
     x_fp16 = torch.randn(2, 8, dtype=torch.float16)
     mgr_fp16.set_mode("old")
     y_fp16 = fp16_host.transformer_blocks[0].attn.to_q(x_fp16)
